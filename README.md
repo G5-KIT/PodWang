@@ -4,9 +4,10 @@ A clean, native macOS podcast client built with SwiftUI. Search for podcasts, ad
 
 ---
 
-## Screenshots
+## Screenshot
 
-*Coming soon*
+<img width="1372" height="872" alt="Screenshot 2026-05-12 at 22 37 52" src="https://github.com/user-attachments/assets/b1f5406a-ab9d-40d8-adef-6d2c497f2f28" />
+
 
 ---
 
