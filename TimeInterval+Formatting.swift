@@ -1,13 +1,15 @@
-// TimeInterval+Formatting.swift v3.2
-// Utility extension on TimeInterval for human-readable playback durations.
-// Kept in its own file so it can be used anywhere without importing view layers.
+// TimeInterval+Formatting.swift
+// PodWang — a native macOS podcast client.
+//
+// Utility extension on TimeInterval for human-readable playback time display.
+// Lives in its own file so it can be used anywhere without importing view layers.
 
 import Foundation
 
 extension TimeInterval {
 
     /// Formats a duration in seconds as h:mm:ss or m:ss.
-    /// Returns "0:00" for invalid values (NaN, infinite).
+    /// Returns "0:00" for invalid values (NaN or infinite).
     var formattedAsPlaybackTime: String {
         guard !isNaN && !isInfinite else { return "0:00" }
         let total = Int(self)
