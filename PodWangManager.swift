@@ -1,6 +1,8 @@
-// PodWangManager.swift v3.2
-// Central manager for all app state and business logic.
-// Marked @MainActor so all @Published state updates happen on the main thread.
+// PodWangManager.swift
+// PodWang — a native macOS podcast client.
+//
+// Central manager for all application state and business logic.
+// Marked @MainActor so every @Published update happens on the main thread.
 // Inherits from NSObject to satisfy URLSessionDownloadDelegate conformance.
 
 import Foundation
@@ -10,10 +12,11 @@ import AVFoundation
 
 // MARK: - Download Progress
 
-/// Snapshot of a single episode's in-flight download state.
-/// Published via `downloadProgress[episodeID]` and consumed by `DownloadButtonView`.
+/// A snapshot of a single episode's in-flight download state.
+/// Keyed by episode UUID in `PodWangManager.downloadProgress` and
+/// consumed by `DownloadButtonView` to drive the progress ring UI.
 struct DownloadProgress {
-    var fractionCompleted: Double  // 0.0 – 1.0
+    var fractionCompleted: Double   // 0.0 – 1.0
     var bytesWritten: Int64
     var bytesExpected: Int64
 }
@@ -23,9 +26,9 @@ struct DownloadProgress {
 @MainActor
 class PodWangManager: NSObject, ObservableObject {
 
-    // MARK: Published state
+    // MARK: - Published state
 
-    /// The user's saved podcast feeds. Persisted to disk on every change via `didSet`.
+    /// The user's saved podcast feeds. Written to disk automatically on every change.
     @Published var feeds: [Feed] = [] {
         didSet { saveFeeds() }
     }
@@ -33,48 +36,47 @@ class PodWangManager: NSObject, ObservableObject {
     /// Episodes for the currently selected feed, populated by `fetchEpisodes(for:)`.
     @Published var selectedFeedEpisodes: [Episode] = []
 
-    /// Artwork URL for the currently selected feed, used as the detail view background.
+    /// Artwork URL for the currently selected feed, used as the blurred detail-view background.
     @Published var currentFeedImageURL: String?
 
-    /// True while an RSS fetch is in progress.
+    /// True while an RSS fetch network request is in progress.
     @Published var isFetching = false
 
-    /// Controls episode list sort order. True = newest first.
+    /// Controls episode list sort order. `true` = newest first.
     @Published var sortNewestFirst = true
 
     /// The episode currently loaded into the player (may be paused).
     @Published var currentPlayingEpisode: Episode?
 
-    /// True when the player is actively playing.
+    /// True when the player is actively playing audio.
     @Published var isPlaying = false
 
-    /// Current playback position in seconds.
+    /// Current playback position in seconds, updated every 0.5s by the time observer.
     @Published var currentTime: Double = 0
 
-    /// Total duration of the current item in seconds.
+    /// Total duration of the current player item in seconds.
     @Published var duration: Double = 0
 
-    /// The user-selected parent folder for downloads, maintained as a security-scoped URL.
+    /// The user-selected parent folder for downloads, held as a security-scoped URL.
     @Published var downloadsFolderURL: URL?
 
-    /// Per-episode download progress. Entries are added when a download starts
-    /// and removed when it completes or is cancelled.
+    /// Per-episode download progress, keyed by episode UUID.
+    /// Entries are inserted when a download starts and removed on completion or cancellation.
     @Published var downloadProgress: [UUID: DownloadProgress] = [:]
 
-    // MARK: Private state
+    // MARK: - Private state
 
     private var player: AVPlayer?
     private var timeObserver: Any?
 
-    /// Maps episode ID → active URLSessionDownloadTask for cancellation support.
+    /// Active download tasks keyed by episode UUID, used for cancellation support.
     private var activeTasks: [UUID: URLSessionDownloadTask] = [:]
 
     /// Delegate-based URLSession for downloads. Lazy so `self` is available as delegate.
-    /// `delegateQueue: .main` ensures all delegate callbacks arrive on the main thread,
+    /// `delegateQueue: .main` keeps all delegate callbacks on the main thread,
     /// which is safe and correct for a @MainActor class.
     private lazy var downloadSession: URLSession = {
-        let config = URLSessionConfiguration.default
-        return URLSession(configuration: config, delegate: self, delegateQueue: .main)
+        URLSession(configuration: .default, delegate: self, delegateQueue: .main)
     }()
 
     // MARK: - Computed properties
@@ -91,7 +93,7 @@ class PodWangManager: NSObject, ObservableObject {
     }
 
     /// Returns a sorted, deduplicated list of category names for a given feed list.
-    /// Feeds with a blank category are grouped under "Uncategorized".
+    /// Feeds with a blank category are placed in "Uncategorized".
     func getCategories(for feedList: [Feed]) -> [String] {
         let allCats = feedList.map {
             $0.category.trimmingCharacters(in: .whitespaces).isEmpty ? "Uncategorized" : $0.category
@@ -102,7 +104,7 @@ class PodWangManager: NSObject, ObservableObject {
 
     // MARK: - Storage paths
 
-    /// Application Support/PodWang — created once on first access.
+    /// Application Support/PodWang — created lazily on first access.
     lazy var saveFolderURL: URL = {
         let appSupport = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -111,10 +113,10 @@ class PodWangManager: NSObject, ObservableObject {
         return appSupport
     }()
 
-    /// Path to the JSON file where feeds are persisted.
+    /// Full path to the JSON file where feeds are persisted.
     private var saveURL: URL { saveFolderURL.appendingPathComponent("feeds.json") }
 
-    // MARK: - Init
+    // MARK: - Initialisation
 
     override init() {
         super.init()
@@ -124,8 +126,8 @@ class PodWangManager: NSObject, ObservableObject {
 
     // MARK: - Folder permission
 
-    /// Presents an NSOpenPanel for the user to choose a parent downloads folder,
-    /// then saves a security-scoped bookmark so access survives app restarts.
+    /// Presents an NSOpenPanel so the user can choose a parent downloads folder,
+    /// then saves a security-scoped bookmark so access persists across app restarts.
     func selectDownloadsFolder() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories    = true
@@ -140,14 +142,14 @@ class PodWangManager: NSObject, ObservableObject {
         }
     }
 
-    /// Clears the saved bookmark and resets the app to the setup screen.
+    /// Clears the saved bookmark and resets the app to the first-run setup screen.
     func resetStorageLocation() {
         downloadsFolderURL?.stopAccessingSecurityScopedResource()
         UserDefaults.standard.removeObject(forKey: "DownloadsFolderBookmark")
         downloadsFolderURL = nil
     }
 
-    /// Saves a security-scoped bookmark for `url` to UserDefaults.
+    /// Persists a security-scoped bookmark for `url` to UserDefaults.
     private func saveFolderPermission(url: URL) {
         do {
             let data = try url.bookmarkData(
@@ -162,7 +164,7 @@ class PodWangManager: NSObject, ObservableObject {
     }
 
     /// Restores folder access from a previously saved security-scoped bookmark.
-    /// Refreshes the bookmark if it has gone stale.
+    /// Refreshes the bookmark automatically if it has gone stale.
     private func loadSavedFolderPermission() {
         guard let data = UserDefaults.standard.data(forKey: "DownloadsFolderBookmark") else { return }
         var isStale = false
@@ -184,9 +186,9 @@ class PodWangManager: NSObject, ObservableObject {
 
     // MARK: - Downloads folder
 
-    /// Returns the effective downloads directory, creating it if needed.
-    /// Downloads are stored inside a `PodWang_Downloads` subfolder within the
-    /// user-selected parent, or inside Documents if no folder has been chosen.
+    /// Returns the effective downloads directory, creating it if it doesn't yet exist.
+    /// Episodes are stored inside a `PodWang_Downloads` subfolder within the user-chosen
+    /// parent, or inside ~/Documents if no folder has been selected.
     func effectiveDownloadsURL() -> URL {
         let base = downloadsFolderURL
             ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -195,19 +197,36 @@ class PodWangManager: NSObject, ObservableObject {
         return folder
     }
 
-    // MARK: - Filename sanitisation
+    // MARK: - Filename helpers
 
-    /// Strips characters that are invalid in file and folder names on macOS.
+    /// Strips characters that are invalid in macOS file and folder names.
     private func sanitized(_ string: String) -> String {
         let invalidChars = CharacterSet(charactersIn: "\\/:*?\"<>|")
         return string.components(separatedBy: invalidChars).joined(separator: "_")
     }
 
+    /// Infers the correct audio file extension from a URL.
+    ///
+    /// Some feeds (e.g. OneDrive share links) use redirect URLs whose path extension
+    /// is `.aspx` rather than an audio format. This method checks the `filedisplay`
+    /// query parameter first (which usually contains the real filename), then falls
+    /// back to the path extension if it's a known audio format, and finally to `mp3`.
+    private func audioExtension(from url: URL) -> String {
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        if let filedisplay = components?.queryItems?.first(where: { $0.name == "filedisplay" })?.value {
+            let ext = (filedisplay as NSString).pathExtension
+            if !ext.isEmpty { return ext }
+        }
+        let pathExt = url.pathExtension.lowercased()
+        let validExts = ["mp3", "m4a", "ogg", "aac", "mp4", "wav"]
+        return validExts.contains(pathExt) ? pathExt : "mp3"
+    }
+
     // MARK: - Download
 
-    /// Starts a download for `episode`, organising the file into a subfolder
-    /// named after `feedTitle` within the downloads directory.
-    /// Silently ignores duplicate requests for the same episode.
+    /// Starts a download for `episode`, saving the file into a subfolder named after
+    /// `feedTitle` within the downloads directory.
+    /// Duplicate download requests for the same episode are silently ignored.
     func download(_ episode: Episode, from feedTitle: String) {
         guard let remoteURL = URL(string: episode.audioURL),
               activeTasks[episode.id] == nil
@@ -215,18 +234,16 @@ class PodWangManager: NSObject, ObservableObject {
 
         let sanitizedFeed    = sanitized(feedTitle)
         let sanitizedEpisode = sanitized(episode.title)
+        let ext              = audioExtension(from: remoteURL)
+        let destinationName  = "\(sanitizedEpisode).\(ext)"
+        let relativePath     = "\(sanitizedFeed)/\(destinationName)"
 
-        // Infer the file extension from the remote URL; fall back to .mp3.
-        let ext             = remoteURL.pathExtension.isEmpty ? "mp3" : remoteURL.pathExtension
-        let destinationName = "\(sanitizedEpisode).\(ext)"
-        let relativePath    = "\(sanitizedFeed)/\(destinationName)"
-
-        // Create the podcast subfolder now, before the task starts.
+        // Create the podcast subfolder before the task starts.
         let podcastFolder = effectiveDownloadsURL().appendingPathComponent(sanitizedFeed, isDirectory: true)
         try? FileManager.default.createDirectory(at: podcastFolder, withIntermediateDirectories: true)
 
-        // Encode episode ID and destination path into taskDescription.
-        // This lets the delegate resolve both values without shared mutable state.
+        // Encode the episode ID and relative destination path into taskDescription.
+        // The delegate reads this to resolve the file location without shared mutable state.
         let task = downloadSession.downloadTask(with: remoteURL)
         task.taskDescription = "\(episode.id.uuidString)|\(relativePath)"
 
@@ -236,7 +253,7 @@ class PodWangManager: NSObject, ObservableObject {
         task.resume()
     }
 
-    /// Cancels an in-flight download and removes its progress entry.
+    /// Cancels an in-flight download and removes its progress entry immediately.
     func cancelDownload(for episode: Episode) {
         activeTasks[episode.id]?.cancel()
         activeTasks.removeValue(forKey: episode.id)
@@ -245,8 +262,8 @@ class PodWangManager: NSObject, ObservableObject {
 
     // MARK: - Playback
 
-    /// Plays the given episode, or toggles play/pause if it is already current.
-    /// Prefers a local file if one exists; falls back to streaming from the remote URL.
+    /// Plays `episode`, or toggles play/pause if it is already the current episode.
+    /// Prefers a local downloaded file if one exists; falls back to streaming.
     func play(_ episode: Episode) {
         if currentPlayingEpisode?.id == episode.id {
             if isPlaying { player?.pause(); isPlaying = false }
@@ -262,7 +279,6 @@ class PodWangManager: NSObject, ObservableObject {
             return
         }
 
-        // Prefer the local downloaded file if it exists.
         if let relativePath = episode.localFileName {
             let localURL = effectiveDownloadsURL().appendingPathComponent(relativePath)
             if FileManager.default.fileExists(atPath: localURL.path) {
@@ -276,8 +292,8 @@ class PodWangManager: NSObject, ObservableObject {
         isPlaying = true
     }
 
-    /// Attaches a periodic time observer to the player, updating `currentTime`
-    /// and `duration` every 0.5 seconds.
+    /// Attaches a periodic time observer to the player, publishing `currentTime`
+    /// and `duration` updates every 0.5 seconds.
     private func setupTimeObserver() {
         guard let currentPlayer = player else { return }
         let interval = CMTime(seconds: 0.5, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
@@ -298,7 +314,7 @@ class PodWangManager: NSObject, ObservableObject {
         player?.seek(to: CMTime(seconds: time, preferredTimescale: 600))
     }
 
-    /// Skips forward or backward by `seconds` relative to the current position.
+    /// Skips forward or backward by `seconds` relative to the current playback position.
     func skip(seconds: Double) {
         seek(to: max(0, min(currentTime + seconds, duration)))
     }
@@ -319,8 +335,8 @@ class PodWangManager: NSObject, ObservableObject {
 
     // MARK: - Feed fetching
 
-    /// Fetches and parses the RSS feed for `feed`, updating `selectedFeedEpisodes`
-    /// and `currentFeedImageURL` on completion.
+    /// Fetches and parses the RSS feed for `feed`, updating `selectedFeedEpisodes`,
+    /// `currentFeedImageURL`, and the feed's stored `artworkURL` on completion.
     func fetchEpisodes(for feed: Feed) {
         guard let url = URL(string: feed.url) else { return }
         isFetching           = true
@@ -329,9 +345,9 @@ class PodWangManager: NSObject, ObservableObject {
 
         Task {
             do {
-                let (data, _) = try await URLSession.shared.data(from: url)
-                let parser    = XMLParser(data: data)
-                let delegate  = RSSParserDelegate()
+                let (data, _)  = try await URLSession.shared.data(from: url)
+                let parser     = XMLParser(data: data)
+                let delegate   = RSSParserDelegate()
                 parser.delegate = delegate
 
                 if parser.parse() {
@@ -339,7 +355,15 @@ class PodWangManager: NSObject, ObservableObject {
                     await MainActor.run {
                         self.selectedFeedEpisodes = episodes
                         self.currentFeedImageURL  = delegate.feedImageURL
-                        self.isFetching           = false
+
+                        // Persist the artwork URL on the feed so the sidebar can show it
+                        // on subsequent launches without re-fetching.
+                        if let imageURL = delegate.feedImageURL,
+                           let idx = self.feeds.firstIndex(where: { $0.id == feed.id }) {
+                            self.feeds[idx].artworkURL = imageURL
+                        }
+
+                        self.isFetching = false
                     }
                 } else {
                     await MainActor.run { self.isFetching = false }
@@ -351,8 +375,8 @@ class PodWangManager: NSObject, ObservableObject {
         }
     }
 
-    /// Cross-references parsed episodes against the local filesystem,
-    /// setting `localFileName` on any episode whose file already exists on disk.
+    /// Checks the local filesystem for already-downloaded files matching each episode,
+    /// setting `localFileName` on any episode whose file is found on disk.
     private func checkLocalFiles(for episodes: [Episode], feedTitle: String) -> [Episode] {
         let sanitizedFeed = sanitized(feedTitle)
         let podcastFolder = effectiveDownloadsURL().appendingPathComponent(sanitizedFeed, isDirectory: true)
@@ -360,12 +384,12 @@ class PodWangManager: NSObject, ObservableObject {
         return episodes.map { episode in
             var updated = episode
             let sanitizedEpisode = sanitized(episode.title)
-            for ext in ["mp3", "m4a", "ogg", "aac"] {
+            if let url = URL(string: episode.audioURL) {
+                let ext       = audioExtension(from: url)
                 let fileName  = "\(sanitizedEpisode).\(ext)"
                 let localPath = podcastFolder.appendingPathComponent(fileName)
                 if FileManager.default.fileExists(atPath: localPath.path) {
                     updated.localFileName = "\(sanitizedFeed)/\(fileName)"
-                    break
                 }
             }
             return updated
@@ -405,7 +429,7 @@ class PodWangManager: NSObject, ObservableObject {
     // MARK: - OPML
 
     /// Generates an OPML 1.1 XML string from the current feed list.
-    /// Special characters in feed titles are escaped for valid XML output.
+    /// Special characters in feed titles are escaped for valid XML.
     func generateOPMLString() -> String {
         func escaped(_ s: String) -> String {
             s.replacingOccurrences(of: "&", with: "&amp;")
@@ -443,7 +467,7 @@ class PodWangManager: NSObject, ObservableObject {
 
 extension PodWangManager: URLSessionDownloadDelegate {
 
-    /// Called repeatedly as download data arrives. Updates `downloadProgress` for the episode.
+    /// Called repeatedly as data arrives. Updates `downloadProgress` for the episode.
     nonisolated func urlSession(
         _ session: URLSession,
         downloadTask: URLSessionDownloadTask,
@@ -471,9 +495,11 @@ extension PodWangManager: URLSessionDownloadDelegate {
         }
     }
 
-    /// Called once when the download finishes. Moves the temp file to its final destination
-    /// and updates the episode model. The file move must happen synchronously here —
+    /// Called once when the download finishes. The file must be moved synchronously here —
     /// the system deletes the temp file as soon as this method returns.
+    ///
+    /// Because this delegate is `nonisolated`, we resolve the bookmark directly from
+    /// UserDefaults rather than calling `effectiveDownloadsURL()` (which requires MainActor).
     nonisolated func urlSession(
         _ session: URLSession,
         downloadTask: URLSessionDownloadTask,
@@ -488,8 +514,6 @@ extension PodWangManager: URLSessionDownloadDelegate {
         let relativePath = String(parts[1])
         let fm = FileManager.default
 
-        // Resolve the destination from the bookmark directly, since we cannot call
-        // effectiveDownloadsURL() from a nonisolated context.
         var baseURL: URL
         var isStale = false
         if let bookmarkData = UserDefaults.standard.data(forKey: "DownloadsFolderBookmark"),
@@ -507,8 +531,6 @@ extension PodWangManager: URLSessionDownloadDelegate {
         }
 
         let destinationURL = baseURL.appendingPathComponent(relativePath)
-
-        // Ensure the podcast subfolder exists before moving.
         try? fm.createDirectory(at: destinationURL.deletingLastPathComponent(), withIntermediateDirectories: true)
 
         if fm.fileExists(atPath: destinationURL.path) {
@@ -521,7 +543,6 @@ extension PodWangManager: URLSessionDownloadDelegate {
             print("Move error: \(error)")
         }
 
-        // Update the episode model and clean up tracking state on the main actor.
         Task { @MainActor in
             if let index = self.selectedFeedEpisodes.firstIndex(where: { $0.id == episodeID }) {
                 self.selectedFeedEpisodes[index].localFileName = relativePath
@@ -531,7 +552,7 @@ extension PodWangManager: URLSessionDownloadDelegate {
         }
     }
 
-    /// Called when a task ends with an error. Cancellations are expected and not logged.
+    /// Called when a task ends with an error. Cancellations are intentional and not logged.
     nonisolated func urlSession(
         _ session: URLSession,
         task: URLSessionTask,
@@ -545,9 +566,13 @@ extension PodWangManager: URLSessionDownloadDelegate {
 // MARK: - RSS Parser
 
 /// SAX-style delegate that parses a podcast RSS feed into `Episode` objects.
-/// Handles both `itunes:image` (preferred) and the standard `<image><url>` fallback
-/// for feed artwork. Characters are accumulated across multiple `foundCharacters`
-/// callbacks and finalised in `didEndElement`.
+///
+/// Artwork priority: `itunes:image` (preferred, higher resolution) over the standard
+/// RSS `<image><url>` fallback. Characters are accumulated across multiple
+/// `foundCharacters` callbacks and finalised in `didEndElement`.
+///
+/// Duration is read from `itunes:duration` and stored as a raw string, since the
+/// format varies by producer (seconds, mm:ss, or hh:mm:ss).
 class RSSParserDelegate: NSObject, XMLParserDelegate {
     var episodes:     [Episode] = []
     var feedImageURL: String?
@@ -557,6 +582,7 @@ class RSSParserDelegate: NSObject, XMLParserDelegate {
     private var currentDesc     = ""
     private var currentAudioURL = ""
     private var currentPubDate  = ""
+    private var currentDuration = ""
     private var isInsideItem    = false
 
     private let dateFormatter: DateFormatter = {
@@ -575,9 +601,10 @@ class RSSParserDelegate: NSObject, XMLParserDelegate {
             currentDesc     = ""
             currentAudioURL = ""
             currentPubDate  = ""
+            currentDuration = ""
         }
 
-        // Prefer itunes:image at feed level for artwork (higher resolution than RSS <image>).
+        // itunes:image is preferred for feed artwork (higher resolution than RSS <image>).
         if !isInsideItem, el == "itunes:image", let href = attrs["href"] {
             feedImageURL = href.replacingOccurrences(of: "http://", with: "https://")
         }
@@ -589,20 +616,20 @@ class RSSParserDelegate: NSObject, XMLParserDelegate {
 
     func parser(_ parser: XMLParser, foundCharacters s: String) {
         switch currentElement {
-        case "title":       currentTitle   += s
-        case "description": currentDesc    += s
-        case "pubDate":     currentPubDate += s
+        case "title":           currentTitle    += s
+        case "description":     currentDesc     += s
+        case "pubDate":         currentPubDate  += s
+        case "itunes:duration": currentDuration += s
         case "url" where !isInsideItem:
-            // Fallback: standard RSS <image><url> — only used if itunes:image not found.
-            // Characters may arrive in multiple chunks, so we accumulate here
-            // and finalise the value in didEndElement.
+            // Standard RSS <image><url> fallback — only used when itunes:image is absent.
+            // Characters may arrive in multiple chunks; accumulated here, finalised below.
             if feedImageURL == nil { feedImageURL = (feedImageURL ?? "") + s }
         default: break
         }
     }
 
     func parser(_ parser: XMLParser, didEndElement el: String, namespaceURI: String?, qualifiedName: String?) {
-        // Finalise the RSS image URL once all character chunks have arrived.
+        // Finalise the RSS image URL once all character chunks have been delivered.
         if el == "url" && !isInsideItem, let raw = feedImageURL {
             let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             feedImageURL = trimmed.isEmpty ? nil : trimmed.replacingOccurrences(of: "http://", with: "https://")
@@ -610,11 +637,13 @@ class RSSParserDelegate: NSObject, XMLParserDelegate {
 
         if el == "item" {
             isInsideItem = false
+            let rawDuration = currentDuration.trimmingCharacters(in: .whitespacesAndNewlines)
             episodes.append(Episode(
                 title:       currentTitle.trimmingCharacters(in: .whitespacesAndNewlines),
                 pubDate:     dateFormatter.date(from: currentPubDate.trimmingCharacters(in: .whitespacesAndNewlines)),
                 audioURL:    currentAudioURL,
-                description: currentDesc.trimmingCharacters(in: .whitespacesAndNewlines)
+                description: currentDesc.trimmingCharacters(in: .whitespacesAndNewlines),
+                duration:    rawDuration.isEmpty ? nil : rawDuration
             ))
         }
 
