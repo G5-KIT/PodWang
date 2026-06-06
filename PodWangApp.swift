@@ -6,6 +6,7 @@
 //   - A secondary Window for the in-app help viewer
 //
 // HelpCommands registers the Help menu item and its ⌘? keyboard shortcut.
+// FileCommands adds Import XML and Export XML to the File menu.
 
 import SwiftUI
 
@@ -19,6 +20,9 @@ struct PodWangApp: App {
         }
         .windowStyle(.automatic)
         .windowToolbarStyle(.unified)
+        .commands {
+            FileCommands()
+        }
 
         // Help window — opened via HelpCommands or ⌘?.
         Window("Help", id: "help-window") {
@@ -28,6 +32,33 @@ struct PodWangApp: App {
         .windowResizability(.contentSize)
         .commands {
             HelpCommands()
+        }
+    }
+}
+
+// MARK: - File Commands
+
+/// Adds Import XML (⌘I) and Export XML (⇧⌘E) to the File menu.
+/// Uses @FocusedObject to reach the PodWangManager from the active window,
+/// which AppView exposes via .focusedSceneObject(_:).
+struct FileCommands: Commands {
+    @FocusedObject private var manager: PodWangManager?
+
+    var body: some Commands {
+        CommandGroup(after: .saveItem) {
+            Divider()
+
+            Button("Import XML…") {
+                manager?.triggerImport()
+            }
+            .keyboardShortcut("i", modifiers: [.command, .shift])
+            .disabled(manager == nil)
+
+            Button("Export XML…") {
+                manager?.triggerExport()
+            }
+            .keyboardShortcut("e", modifiers: [.command, .shift])
+            .disabled(manager == nil)
         }
     }
 }
