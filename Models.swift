@@ -1,7 +1,7 @@
 // Models.swift
 // PodWang — a native macOS podcast client.
 //
-// Core data models. Both structs are:
+// Core data models. All structs are:
 //   - Codable   — for JSON persistence to Application Support
 //   - Hashable  — for use in SwiftUI selection bindings
 //   - Sendable  — for safe use across concurrency contexts
@@ -80,5 +80,60 @@ struct Feed: Identifiable, Hashable, Codable, Sendable {
         let raw         = try container.decodeIfPresent(String.self,  forKey: .category)  ?? ""
         self.category   = raw.isEmpty ? "Uncategorized" : raw
         self.artworkURL = try container.decodeIfPresent(String.self,  forKey: .artworkURL)
+    }
+}
+
+// MARK: - RadioStation
+
+/// An internet radio station with a direct audio stream URL.
+///
+/// `faviconURL` is optional; it is populated from search results when available and
+/// persisted so the sidebar can show station icons without re-fetching.
+/// `tags` holds a comma-separated genre/tag string sourced from the radio-browser.info API
+/// and is used as the station's "category" for display purposes.
+struct RadioStation: Identifiable, Hashable, Codable, Sendable {
+    var id: UUID
+    var name: String
+    var streamURL: String
+    var faviconURL: String?
+    var tags: String        // Comma-separated genres, e.g. "jazz,blues". Empty = "Uncategorized".
+    var country: String?    // Optional country name for display.
+    var bitrate: Int?       // kbps, optional.
+
+    init(
+        id: UUID = UUID(),
+        name: String,
+        streamURL: String,
+        faviconURL: String? = nil,
+        tags: String = "",
+        country: String? = nil,
+        bitrate: Int? = nil
+    ) {
+        self.id         = id
+        self.name       = name
+        self.streamURL  = streamURL
+        self.faviconURL = faviconURL
+        self.tags       = tags
+        self.country    = country
+        self.bitrate    = bitrate
+    }
+
+    /// The primary display tag (first in the comma-separated list), capitalised.
+    /// Falls back to "Uncategorized" when tags is empty.
+    var primaryTag: String {
+        let first = tags.split(separator: ",").first?
+            .trimmingCharacters(in: .whitespaces) ?? ""
+        return first.isEmpty ? "Uncategorized" : first.capitalized
+    }
+
+    init(from decoder: Decoder) throws {
+        let c           = try decoder.container(keyedBy: CodingKeys.self)
+        self.id         = try c.decodeIfPresent(UUID.self,   forKey: .id)         ?? UUID()
+        self.name       = try c.decode(String.self,           forKey: .name)
+        self.streamURL  = try c.decode(String.self,           forKey: .streamURL)
+        self.faviconURL = try c.decodeIfPresent(String.self,  forKey: .faviconURL)
+        self.tags       = try c.decodeIfPresent(String.self,  forKey: .tags)       ?? ""
+        self.country    = try c.decodeIfPresent(String.self,  forKey: .country)
+        self.bitrate    = try c.decodeIfPresent(Int.self,     forKey: .bitrate)
     }
 }
