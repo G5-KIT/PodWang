@@ -1,34 +1,55 @@
 // SidebarView.swift
 // PodWang — a native macOS podcast client.
 //
-// The left-hand feed list panel of the NavigationSplitView.
-// Feeds are grouped by category, searchable, draggable within a category,
-// and support swipe-to-delete and swipe-to-edit gestures.
+// The left-hand panel of the NavigationSplitView.
+// A segmented Podcasts / Radio toggle at the top switches between two modes:
 //
-// The gear toolbar button opens ManagementPopover (SidebarAdditions.swift)
-// for all feed management actions.
+//   Podcasts — existing feed list, grouped by category, with the gear menu.
+//   Radio    — saved radio station list, grouped by primary tag, with its own gear menu.
+//
+// Both modes share the same swipe-to-delete / swipe-to-edit pattern and in-place
+// drag-to-reorder behaviour.
 
 import SwiftUI
 
+// MARK: - Sidebar mode
+
+enum SidebarMode: String, CaseIterable {
+    case podcasts = "Podcasts"
+    case radio    = "Radio"
+}
+
+// MARK: - SidebarView
+
 struct SidebarView: View {
     @ObservedObject var manager: PodWangManager
+
+    // Podcast selection / search
     @Binding var selectedFeed: Feed?
     @Binding var searchText: String
-    @Binding var showingFilePicker: Bool
-    @Binding var showingFileExporter: Bool
-    @Binding var opmlDoc: OPMLDocument?
 
-    /// The UUID of the feed currently open in the inline edit form, if any.
-    @State private var editingFeedID:    UUID?
-    @State private var tempTitle       = ""
-    @State private var tempCategory    = ""
-    @State private var showingManagement = false
+    // Radio selection / search
+    @Binding var selectedStation: RadioStation?
+    @Binding var radioSearchText: String
+
+    @State private var sidebarMode: SidebarMode = .podcasts
+
+    // Podcast inline edit state
+    @State private var editingFeedID: UUID?
+    @State private var tempFeedTitle    = ""
+    @State private var tempFeedCategory = ""
+
+    // Radio inline edit state
+    @State private var editingStationID: UUID?
+    @State private var tempStationName = ""
+    @State private var tempStationTags = ""
+
+    // Management popover visibility
+    @State private var showingPodcastManagement = false
+    @State private var showingRadioManagement   = false
 
     // MARK: - Filtered data
 
-    /// Feeds filtered by the current search text, matching title or category.
-    /// Returns the full feed list when the search field is empty.
-    /// Computed as a property rather than inline in `body` to keep the view readable.
     private var filteredFeeds: [Feed] {
         guard !searchText.isEmpty else { return manager.feeds }
         return manager.feeds.filter {
@@ -37,28 +58,82 @@ struct SidebarView: View {
         }
     }
 
-    /// Sorted, deduplicated category names for the current filtered feed list.
-    private var categories: [String] {
+    private var feedCategories: [String] {
         manager.getCategories(for: filteredFeeds)
+    }
+
+    private var filteredStations: [RadioStation] {
+        guard !radioSearchText.isEmpty else { return manager.radioStations }
+        return manager.radioStations.filter {
+            $0.name.localizedCaseInsensitiveContains(radioSearchText) ||
+            $0.tags.localizedCaseInsensitiveContains(radioSearchText) ||
+            ($0.country ?? "").localizedCaseInsensitiveContains(radioSearchText)
+        }
+    }
+
+    private var stationTags: [String] {
+        let allTags = filteredStations.map { $0.primaryTag }
+        return Array(Set(allTags)).sorted()
     }
 
     // MARK: - Body
 
     var body: some View {
+        VStack(spacing: 0) {
+            // Mode toggle — sits above the list, outside the List scroll area.
+            Picker("Mode", selection: $sidebarMode) {
+                ForEach(SidebarMode.allCases, id: \.self) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+
+            Divider()
+
+            if sidebarMode == .podcasts {
+                podcastList
+            } else {
+                radioList
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                if sidebarMode == .podcasts {
+                    Button { showingPodcastManagement = true } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .help("Manage podcasts")
+                    .popover(isPresented: $showingPodcastManagement, arrowEdge: .bottom) {
+                        ManagementPopover(manager: manager)
+                    }
+                } else {
+                    Button { showingRadioManagement = true } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .help("Manage radio stations")
+                    .popover(isPresented: $showingRadioManagement, arrowEdge: .bottom) {
+                        RadioManagementPopover(manager: manager)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Podcast list
+
+    private var podcastList: some View {
         List(selection: $selectedFeed) {
-            ForEach(categories, id: \.self) { category in
+            ForEach(feedCategories, id: \.self) { category in
                 Section(header: Text(category)) {
                     let feedsInCategory = filteredFeeds.filter {
                         ($0.category.isEmpty ? "Uncategorized" : $0.category) == category
                     }
                     ForEach(feedsInCategory) { feed in
-                        sidebarRow(for: feed)
+                        podcastRow(for: feed)
                     }
                     .onMove { localSource, localDestination in
-                        // SwiftUI's onMove provides indices relative to the category slice,
-                        // but manager.feeds is the full unsegmented array. We map each local
-                        // index back to its global position before performing the move,
-                        // which prevents cross-category reorder bugs.
                         let globalSource = IndexSet(
                             localSource.compactMap { localIndex in
                                 manager.feeds.firstIndex(where: { $0.id == feedsInCategory[localIndex].id })
@@ -70,7 +145,6 @@ struct SidebarView: View {
                                 manager.feeds.move(fromOffsets: globalSource, toOffset: globalDestination)
                             }
                         } else {
-                            // Dragged to the end of the category.
                             if let lastFeed = feedsInCategory.last,
                                let lastGlobal = manager.feeds.firstIndex(where: { $0.id == lastFeed.id }) {
                                 manager.feeds.move(fromOffsets: globalSource, toOffset: lastGlobal + 1)
@@ -80,67 +154,70 @@ struct SidebarView: View {
                 }
             }
         }
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button { showingManagement = true } label: {
-                    Image(systemName: "gearshape")
-                }
-                .help("Manage podcasts")
-                .popover(isPresented: $showingManagement, arrowEdge: .bottom) {
-                    ManagementPopover(
-                        manager: manager,
-                        showingFilePicker: $showingFilePicker,
-                        showingFileExporter: $showingFileExporter,
-                        opmlDoc: $opmlDoc
-                    )
+    }
+
+    // MARK: - Radio list
+
+    private var radioList: some View {
+        List(selection: $selectedStation) {
+            ForEach(stationTags, id: \.self) { tag in
+                Section(header: Text(tag)) {
+                    let stationsInTag = filteredStations.filter { $0.primaryTag == tag }
+                    ForEach(stationsInTag) { station in
+                        radioRow(for: station)
+                    }
+                    .onMove { localSource, localDestination in
+                        let globalSource = IndexSet(
+                            localSource.compactMap { localIndex in
+                                manager.radioStations.firstIndex(where: { $0.id == stationsInTag[localIndex].id })
+                            }
+                        )
+                        if localDestination < stationsInTag.count {
+                            let destStation = stationsInTag[localDestination]
+                            if let globalDest = manager.radioStations.firstIndex(where: { $0.id == destStation.id }) {
+                                manager.radioStations.move(fromOffsets: globalSource, toOffset: globalDest)
+                            }
+                        } else {
+                            if let lastStation = stationsInTag.last,
+                               let lastGlobal = manager.radioStations.firstIndex(where: { $0.id == lastStation.id }) {
+                                manager.radioStations.move(fromOffsets: globalSource, toOffset: lastGlobal + 1)
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 
-    // MARK: - Sidebar row
+    // MARK: - Podcast row
 
-    /// Renders either an inline edit form or a standard NavigationLink row,
-    /// depending on whether this feed is currently being edited.
     @ViewBuilder
-    private func sidebarRow(for feed: Feed) -> some View {
+    private func podcastRow(for feed: Feed) -> some View {
         if editingFeedID == feed.id {
-            // Inline edit form — Save is triggered by button or Return key.
-            // Cancel discards changes without saving.
             VStack(spacing: 6) {
-                TextField("Title", text: $tempTitle)
-                TextField("Category", text: $tempCategory)
-
+                TextField("Title", text: $tempFeedTitle)
+                TextField("Category", text: $tempFeedCategory)
                 HStack {
                     Button("Cancel") { editingFeedID = nil }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-
+                        .buttonStyle(.bordered).controlSize(.small)
                     Spacer()
-
-                    Button("Save") { commitEdit(for: feed) }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-                        .onSubmit { commitEdit(for: feed) }
+                    Button("Save") { commitFeedEdit(for: feed) }
+                        .buttonStyle(.borderedProminent).controlSize(.small)
+                        .onSubmit { commitFeedEdit(for: feed) }
                 }
             }
             .textFieldStyle(.roundedBorder)
             .padding(.vertical, 4)
-
         } else {
             NavigationLink(value: feed) {
                 HStack(spacing: 8) {
-                    // Show the feed's podcast artwork thumbnail if available,
-                    // falling back to the radio waves placeholder otherwise.
-                    // Artwork is fetched and persisted the first time a feed is opened.
                     if let artworkURL = feed.artworkURL, let url = URL(string: artworkURL) {
                         AsyncImage(url: url) { phase in
                             switch phase {
                             case .success(let image):
                                 image.resizable().aspectRatio(contentMode: .fill)
                             default:
-                                Image(systemName: "dot.radiowaves.up.forward")
-                                    .foregroundColor(.accentColor)
+                                Image(systemName: "dot.radiowaves.up.forward").foregroundColor(.accentColor)
                             }
                         }
                         .frame(width: 24, height: 24)
@@ -153,35 +230,115 @@ struct SidebarView: View {
                     Text(feed.title)
                 }
             }
-            // Swipe left to delete.
             .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                 Button(role: .destructive) {
                     if let idx = manager.feeds.firstIndex(where: { $0.id == feed.id }) {
                         manager.removeFeed(at: IndexSet(integer: idx))
                     }
-                } label: {
-                    Label("Delete", systemImage: "trash")
-                }
+                } label: { Label("Delete", systemImage: "trash") }
             }
-            // Swipe right to edit.
             .swipeActions(edge: .leading, allowsFullSwipe: true) {
                 Button {
-                    editingFeedID = feed.id
-                    tempTitle     = feed.title
-                    tempCategory  = feed.category
-                } label: {
-                    Label("Edit", systemImage: "pencil")
-                }
+                    editingFeedID    = feed.id
+                    tempFeedTitle    = feed.title
+                    tempFeedCategory = feed.category
+                } label: { Label("Edit", systemImage: "pencil") }
                 .tint(.orange)
             }
         }
     }
 
-    /// Writes the edited title and category back to the manager and closes the edit form.
-    private func commitEdit(for feed: Feed) {
+    private func commitFeedEdit(for feed: Feed) {
         guard let idx = manager.feeds.firstIndex(where: { $0.id == feed.id }) else { return }
-        manager.feeds[idx].title    = tempTitle
-        manager.feeds[idx].category = tempCategory.isEmpty ? "Uncategorized" : tempCategory
+        manager.feeds[idx].title    = tempFeedTitle
+        manager.feeds[idx].category = tempFeedCategory.isEmpty ? "Uncategorized" : tempFeedCategory
         editingFeedID = nil
+    }
+
+    // MARK: - Radio row
+
+    @ViewBuilder
+    private func radioRow(for station: RadioStation) -> some View {
+        if editingStationID == station.id {
+            VStack(spacing: 6) {
+                TextField("Name", text: $tempStationName)
+                TextField("Tags / Genre", text: $tempStationTags)
+                HStack {
+                    Button("Cancel") { editingStationID = nil }
+                        .buttonStyle(.bordered).controlSize(.small)
+                    Spacer()
+                    Button("Save") { commitStationEdit(for: station) }
+                        .buttonStyle(.borderedProminent).controlSize(.small)
+                        .onSubmit { commitStationEdit(for: station) }
+                }
+            }
+            .textFieldStyle(.roundedBorder)
+            .padding(.vertical, 4)
+        } else {
+            NavigationLink(value: station) {
+                HStack(spacing: 8) {
+                    stationIcon(for: station)
+                        .frame(width: 24, height: 24)
+                        .cornerRadius(4)
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(station.name)
+                            .lineLimit(1)
+                        if let country = station.country, !country.isEmpty {
+                            Text(country)
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+
+                    Spacer()
+
+                    // Live playing indicator dot.
+                    if manager.currentRadioStation?.id == station.id && manager.isRadioPlaying {
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 7, height: 7)
+                    }
+                }
+            }
+            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                Button(role: .destructive) {
+                    if let idx = manager.radioStations.firstIndex(where: { $0.id == station.id }) {
+                        manager.removeRadioStation(at: IndexSet(integer: idx))
+                    }
+                } label: { Label("Delete", systemImage: "trash") }
+            }
+            .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                Button {
+                    editingStationID = station.id
+                    tempStationName  = station.name
+                    tempStationTags  = station.tags
+                } label: { Label("Edit", systemImage: "pencil") }
+                .tint(.orange)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func stationIcon(for station: RadioStation) -> some View {
+        if let faviconURL = station.faviconURL, let url = URL(string: faviconURL) {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let image):
+                    image.resizable().aspectRatio(contentMode: .fill)
+                default:
+                    Image(systemName: "radio").foregroundColor(.accentColor)
+                }
+            }
+        } else {
+            Image(systemName: "radio").foregroundColor(.accentColor)
+        }
+    }
+
+    private func commitStationEdit(for station: RadioStation) {
+        guard let idx = manager.radioStations.firstIndex(where: { $0.id == station.id }) else { return }
+        manager.radioStations[idx].name = tempStationName
+        manager.radioStations[idx].tags = tempStationTags
+        editingStationID = nil
     }
 }
