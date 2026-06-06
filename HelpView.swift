@@ -33,6 +33,12 @@ struct HelpView: View {
 PodWang will ask you to choose a folder for storing your downloaded files. \
 The home Downloads folder is a good choice. PodWang creates a subfolder \
 for each podcast using the feed title.
+
+• Podcasts and Radio:
+
+Use the Podcasts / Radio toggle at the top of the sidebar to switch between \
+your podcast feeds and your saved internet radio stations. Each mode has its \
+own gear menu (⚙) for managing content.
 """
         ),
 
@@ -50,12 +56,6 @@ not in the Apple catalogue.
 
 • Add Podcast
 Opens a form to manually enter a feed title, RSS URL, and optional category.
-
-• Import XML
-Loads feeds from a saved XML or OPML file.
-
-• Export XML
-Saves a backup of your feeds as PodWang Backup.xml.
 
 • Reset Storage
 Allows you to change your downloads folder location.
@@ -101,6 +101,52 @@ Once complete, the button becomes a folder icon — tap it to reveal the file in
 Tap the play button to stream an episode. The player bar opens at the bottom of the \
 screen with a scrubber, time display, and skip ±30s / ±60s controls. \
 If the episode has already been downloaded, the local file is used automatically.
+"""
+        ),
+
+        HelpTopic(
+            title: "Internet Radio",
+            content: """
+Switch to Radio mode using the Podcasts / Radio toggle at the top of the sidebar.
+
+• Finding Stations
+Tap the gear icon (⚙) and choose Find Stations… to search the radio-browser.info \
+directory, which lists thousands of stations worldwide. Results are sorted by \
+popularity. Tap + to save a station to your list.
+
+• Adding a Station Manually
+Tap the gear icon (⚙) and choose Add Station… to enter a station name, direct \
+stream URL (mp3, aac, etc.), genre tags, and country manually.
+
+• Playing a Station
+Select a station from the sidebar to open its detail view, then tap the large \
+play button. A Live indicator and a mini player bar appear at the bottom of the \
+screen while streaming.
+
+• Pause and Stop
+Tap the play button again to pause. Tap the ✕ in the mini player bar to stop \
+and dismiss the player.
+
+• Edit or Delete
+Swipe left on a station to delete it. Swipe right to edit its name or tags.
+"""
+        ),
+
+        HelpTopic(
+            title: "Backup and Restore",
+            content: """
+Your podcast feeds and radio stations can be backed up together as a single XML file \
+and restored at any time.
+
+• Import XML  (File menu → Import XML… or ⇧⌘I)
+Reads a PodWang backup file and adds any feeds or stations not already in your lists. \
+Existing entries are matched by URL and are never duplicated.
+
+• Export XML  (File menu → Export XML… or ⇧⌘E)
+Saves all your podcast feeds and radio stations to a file called PodWang Backup.xml. \
+The file uses standard OPML format, so podcast feeds can also be imported by other \
+podcast apps. Radio stations are stored in a clearly labelled group within the same \
+file and are restored automatically when imported back into PodWang.
 """
         ),
 
